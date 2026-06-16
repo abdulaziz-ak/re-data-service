@@ -6,7 +6,7 @@ from typing import Literal
 
 from fastapi import APIRouter, Query
 
-from re_data.dependencies import StoreDep
+from re_data.dependencies import MarketCacheDep, StoreDep
 from re_data.market.aliases import _norm
 from re_data.market.areas import list_areas
 from re_data.market.index import latest_index
@@ -28,6 +28,7 @@ _DEGRADED_VERSION = "none"
 def get_areas(
     emirate: str | None = Query(default=None, description="Filter by emirate (case-insensitive)"),
     store: StoreDep = ...,  # type: ignore[assignment]
+    cache: MarketCacheDep = ...,  # type: ignore[assignment]
 ) -> AreasListResponse:
     """List all areas derived from the transaction dataset, with alias resolution."""
     snapshot = store.get_active()
@@ -39,13 +40,24 @@ def get_areas(
         )
 
     emirate_norm = _norm(emirate) if emirate else None
+    cache_key = cache.build_key(
+        "areas",
+        snapshot.version,
+        {"emirate": emirate_norm or "all"},
+    )
+    cached = cache.get_model(cache_key, AreasListResponse)
+    if cached is not None:
+        return cached
+
     items, data_state = list_areas(snapshot, emirate=emirate_norm)
 
-    return AreasListResponse(
+    response = AreasListResponse(
         items=[AreaItem(value=i["value"], label=i["label"], emirate=i["emirate"]) for i in items],
         dataset_version=snapshot.version,
         data_state=data_state,
     )
+    cache.set_model(cache_key, response)
+    return response
 
 
 @router.get("/ppsf", response_model=PpsfResponse)
@@ -56,6 +68,7 @@ def get_ppsf(
     unit_type: str | None = Query(default=None),
     bedrooms: int | None = Query(default=None, description="0 or omitted means unspecified"),
     store: StoreDep = ...,  # type: ignore[assignment]
+    cache: MarketCacheDep = ...,  # type: ignore[assignment]
 ) -> PpsfResponse:
     """Look up AED/sqft benchmark with progressive-relaxation fallback."""
     snapshot = store.get_active()
@@ -66,24 +79,42 @@ def get_ppsf(
             data_state="degraded",
         )
 
+    bedrooms_norm = int(bedrooms or 0)
+    cache_key = cache.build_key(
+        "ppsf",
+        snapshot.version,
+        {
+            "emirate": _norm(emirate) if emirate else "",
+            "area": _norm(area) if area else "",
+            "building": _norm(building) if building else "",
+            "unit_type": _norm(unit_type) if unit_type else "",
+            "bedrooms": bedrooms_norm,
+        },
+    )
+    cached = cache.get_model(cache_key, PpsfResponse)
+    if cached is not None:
+        return cached
+
     result = lookup_ppsf(
         snapshot,
         emirate=emirate,
         area=area,
         building=building,
         unit_type=unit_type,
-        bedrooms=int(bedrooms or 0),
+        bedrooms=bedrooms_norm,
     )
 
     if result is None:
-        return PpsfResponse(
+        response = PpsfResponse(
             found=False,
             dataset_version=snapshot.version,
             data_state=snapshot.state,
         )
+        cache.set_model(cache_key, response)
+        return response
 
     mk = result.matched_key
-    return PpsfResponse(
+    response = PpsfResponse(
         found=True,
         aed_per_sqft=result.stat.aed_per_sqft,
         sample_size=result.stat.sample_size,
@@ -100,6 +131,8 @@ def get_ppsf(
         dataset_version=snapshot.version,
         data_state=snapshot.state,
     )
+    cache.set_model(cache_key, response)
+    return response
 
 
 @router.get("/index/latest", response_model=IndexLatestResponse)
@@ -107,6 +140,7 @@ def get_index_latest(
     segment: Literal["all", "flat", "villa"] = Query(default="all"),
     horizon: Literal["monthly", "quarterly", "yearly"] = Query(default="yearly"),
     store: StoreDep = ...,  # type: ignore[assignment]
+    cache: MarketCacheDep = ...,  # type: ignore[assignment]
 ) -> IndexLatestResponse:
     """Return the latest market index snapshot for the given segment and horizon."""
     snapshot = store.get_active()
@@ -118,17 +152,28 @@ def get_index_latest(
             data_state="degraded",
         )
 
+    cache_key = cache.build_key(
+        "index-latest",
+        snapshot.version,
+        {"segment": segment, "horizon": horizon},
+    )
+    cached = cache.get_model(cache_key, IndexLatestResponse)
+    if cached is not None:
+        return cached
+
     snap = latest_index(snapshot, segment=segment, horizon=horizon)
 
     if snap is None:
-        return IndexLatestResponse(
+        response = IndexLatestResponse(
             ok=False,
             message="No index data loaded.",
             dataset_version=snapshot.version,
             data_state="degraded",
         )
+        cache.set_model(cache_key, response)
+        return response
 
-    return IndexLatestResponse(
+    response = IndexLatestResponse(
         ok=True,
         date=snap.date,
         segment=snap.segment,
@@ -138,3 +183,5 @@ def get_index_latest(
         dataset_version=snapshot.version,
         data_state=snapshot.state,
     )
+    cache.set_model(cache_key, response)
+    return response

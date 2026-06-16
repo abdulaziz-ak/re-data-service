@@ -27,6 +27,8 @@ class Settings(BaseSettings):
     ppsf_max: Decimal = Field(default=Decimal("20000"), validation_alias="PPSF_MAX")
     port: int = Field(default=8001, validation_alias="PORT")
     app_env: str = Field(default="local", validation_alias="APP_ENV")
+    redis_url: str = Field(default="", validation_alias="REDIS_URL")
+    market_cache_ttl_s: int = Field(default=900, validation_alias="MARKET_CACHE_TTL_S")
 
     @field_validator("dld_area_unit", mode="before")
     @classmethod
@@ -39,6 +41,11 @@ class Settings(BaseSettings):
         if isinstance(v, Decimal):
             return v
         return Decimal(str(v).strip())
+
+    @field_validator("redis_url", mode="before")
+    @classmethod
+    def _norm_optional_url(cls, v: object) -> str:
+        return str(v or "").strip()
 
     def transaction_paths(self) -> list[Path]:
         raw = self.benchmarks_csv_paths.strip()

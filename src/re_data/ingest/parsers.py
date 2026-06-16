@@ -64,7 +64,14 @@ def parse_date_any(x: object) -> str | None:
     if not s:
         return None
 
-    for fmt in ("%Y-%m-%d", "%Y/%m/%d", "%d/%m/%Y", "%m/%d/%Y", "%Y-%m-%d %H:%M:%S"):
+    for fmt in (
+        "%Y-%m-%d",
+        "%Y/%m/%d",
+        "%d/%m/%Y",
+        "%d-%m-%Y",
+        "%m/%d/%Y",
+        "%Y-%m-%d %H:%M:%S",
+    ):
         try:
             return datetime.strptime(s, fmt).date().isoformat()
         except Exception:

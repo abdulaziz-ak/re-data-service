@@ -9,6 +9,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
+from re_data.cache import create_market_cache
 from re_data.config import Settings, get_settings
 from re_data.routers import admin, dataset, health, market
 from re_data.store.dataset_store import DatasetStore
@@ -33,7 +34,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     store.initial_load()
     app.state.dataset_store = store
     app.state.settings = settings
+    app.state.market_cache = create_market_cache(settings)
     yield
+    app.state.market_cache.close()
 
 
 def create_app() -> FastAPI:

@@ -121,6 +121,8 @@ def client_factory():
         os.environ["PPSF_MIN"] = str(settings.ppsf_min)
         os.environ["PPSF_MAX"] = str(settings.ppsf_max)
         os.environ["APP_ENV"] = settings.app_env
+        os.environ["REDIS_URL"] = settings.redis_url
+        os.environ["MARKET_CACHE_TTL_S"] = str(settings.market_cache_ttl_s)
 
         client = TestClient(create_app())
         client.__enter__()
