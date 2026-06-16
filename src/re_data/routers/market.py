@@ -1,0 +1,187 @@
+"""Market read API — /v1/market/areas, /v1/market/ppsf, /v1/market/index/latest."""
+
+from __future__ import annotations
+
+from typing import Literal
+
+from fastapi import APIRouter, Query
+
+from re_data.dependencies import MarketCacheDep, StoreDep
+from re_data.market.aliases import _norm
+from re_data.market.areas import list_areas
+from re_data.market.index import latest_index
+from re_data.market.lookup import lookup_ppsf
+from re_data.models.market_api import (
+    AreaItem,
+    AreasListResponse,
+    IndexLatestResponse,
+    MatchedKey,
+    PpsfResponse,
+)
+
+router = APIRouter(prefix="/v1/market", tags=["market"])
+
+_DEGRADED_VERSION = "none"
+
+
+@router.get("/areas", response_model=AreasListResponse)
+def get_areas(
+    emirate: str | None = Query(default=None, description="Filter by emirate (case-insensitive)"),
+    store: StoreDep = ...,  # type: ignore[assignment]
+    cache: MarketCacheDep = ...,  # type: ignore[assignment]
+) -> AreasListResponse:
+    """List all areas derived from the transaction dataset, with alias resolution."""
+    snapshot = store.get_active()
+    if snapshot is None:
+        return AreasListResponse(
+            items=[],
+            dataset_version=_DEGRADED_VERSION,
+            data_state="degraded",
+        )
+
+    emirate_norm = _norm(emirate) if emirate else None
+    cache_key = cache.build_key(
+        "areas",
+        snapshot.version,
+        {"emirate": emirate_norm or "all"},
+    )
+    cached = cache.get_model(cache_key, AreasListResponse)
+    if cached is not None:
+        return cached
+
+    items, data_state = list_areas(snapshot, emirate=emirate_norm)
+
+    response = AreasListResponse(
+        items=[AreaItem(value=i["value"], label=i["label"], emirate=i["emirate"]) for i in items],
+        dataset_version=snapshot.version,
+        data_state=data_state,
+    )
+    cache.set_model(cache_key, response)
+    return response
+
+
+@router.get("/ppsf", response_model=PpsfResponse)
+def get_ppsf(
+    emirate: str | None = Query(default=None),
+    area: str | None = Query(default=None),
+    building: str | None = Query(default=None),
+    unit_type: str | None = Query(default=None),
+    bedrooms: int | None = Query(default=None, description="0 or omitted means unspecified"),
+    store: StoreDep = ...,  # type: ignore[assignment]
+    cache: MarketCacheDep = ...,  # type: ignore[assignment]
+) -> PpsfResponse:
+    """Look up AED/sqft benchmark with progressive-relaxation fallback."""
+    snapshot = store.get_active()
+    if snapshot is None:
+        return PpsfResponse(
+            found=False,
+            dataset_version=_DEGRADED_VERSION,
+            data_state="degraded",
+        )
+
+    bedrooms_norm = int(bedrooms or 0)
+    cache_key = cache.build_key(
+        "ppsf",
+        snapshot.version,
+        {
+            "emirate": _norm(emirate) if emirate else "",
+            "area": _norm(area) if area else "",
+            "building": _norm(building) if building else "",
+            "unit_type": _norm(unit_type) if unit_type else "",
+            "bedrooms": bedrooms_norm,
+        },
+    )
+    cached = cache.get_model(cache_key, PpsfResponse)
+    if cached is not None:
+        return cached
+
+    result = lookup_ppsf(
+        snapshot,
+        emirate=emirate,
+        area=area,
+        building=building,
+        unit_type=unit_type,
+        bedrooms=bedrooms_norm,
+    )
+
+    if result is None:
+        response = PpsfResponse(
+            found=False,
+            dataset_version=snapshot.version,
+            data_state=snapshot.state,
+        )
+        cache.set_model(cache_key, response)
+        return response
+
+    mk = result.matched_key
+    response = PpsfResponse(
+        found=True,
+        aed_per_sqft=result.stat.aed_per_sqft,
+        sample_size=result.stat.sample_size,
+        confidence=result.stat.confidence,
+        last_updated=result.stat.last_updated,
+        source=result.stat.source,
+        matched_key=MatchedKey(
+            emirate=mk[0],
+            area=mk[1],
+            building=mk[2],
+            unit_type=mk[3],
+            bedrooms=mk[4],
+        ),
+        dataset_version=snapshot.version,
+        data_state=snapshot.state,
+    )
+    cache.set_model(cache_key, response)
+    return response
+
+
+@router.get("/index/latest", response_model=IndexLatestResponse)
+def get_index_latest(
+    segment: Literal["all", "flat", "villa"] = Query(default="all"),
+    horizon: Literal["monthly", "quarterly", "yearly"] = Query(default="yearly"),
+    store: StoreDep = ...,  # type: ignore[assignment]
+    cache: MarketCacheDep = ...,  # type: ignore[assignment]
+) -> IndexLatestResponse:
+    """Return the latest market index snapshot for the given segment and horizon."""
+    snapshot = store.get_active()
+    if snapshot is None:
+        return IndexLatestResponse(
+            ok=False,
+            message="No index data loaded.",
+            dataset_version=_DEGRADED_VERSION,
+            data_state="degraded",
+        )
+
+    cache_key = cache.build_key(
+        "index-latest",
+        snapshot.version,
+        {"segment": segment, "horizon": horizon},
+    )
+    cached = cache.get_model(cache_key, IndexLatestResponse)
+    if cached is not None:
+        return cached
+
+    snap = latest_index(snapshot, segment=segment, horizon=horizon)
+
+    if snap is None:
+        response = IndexLatestResponse(
+            ok=False,
+            message="No index data loaded.",
+            dataset_version=snapshot.version,
+            data_state="degraded",
+        )
+        cache.set_model(cache_key, response)
+        return response
+
+    response = IndexLatestResponse(
+        ok=True,
+        date=snap.date,
+        segment=snap.segment,
+        horizon=snap.horizon,
+        index_value=snap.index_value,
+        price_index_value=snap.price_index_value,
+        dataset_version=snapshot.version,
+        data_state=snapshot.state,
+    )
+    cache.set_model(cache_key, response)
+    return response
